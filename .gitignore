@@ -1,0 +1,6 @@
+node_modules/
+__pycache__/
+*.pyc
+backend/*.db
+backend/.browser-profile/
+.pytest_cache/

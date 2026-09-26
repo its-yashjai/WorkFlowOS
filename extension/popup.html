@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  body{margin:0;width:280px;font:13px system-ui,sans-serif;background:#0A0E1A;color:#ECF1FF}
+  .w{padding:16px} h1{font-size:15px;margin:0 0 2px} p{margin:0;color:#9FB0CF}
+  .row{display:flex;align-items:center;justify-content:space-between;margin-top:14px}
+  .sw{position:relative;width:40px;height:22px;border-radius:11px;background:#1F2C4A;border:0;cursor:pointer}
+  .sw i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#9FB0CF;transition:.2s}
+  .sw.on{background:#34D6C4}.sw.on i{left:21px;background:#0A0E1A}
+  input{width:100%;box-sizing:border-box;margin-top:6px;height:32px;border-radius:8px;border:1px solid #2a3a5c;background:#10172A;color:#ECF1FF;padding:0 8px}
+  .st{margin-top:12px;font-size:12px}.ok{color:#5BE49B}.bad{color:#FF6B6B}.muted{color:#6A7A99}
+  a{color:#7C8CFF}
+</style></head><body><div class="w">
+  <h1>WorkFlowOS Observer</h1><p>Spots repeated work in your browser.</p>
+  <div class="row"><span>Observe this browser</span><button id="t" class="sw" aria-label="Observe"><i></i></button></div>
+  <label class="st muted" style="display:block">WorkFlowOS address<input id="s"></label>
+  <div id="status" class="st muted"></div>
+  <p class="st muted">Never sent: typed text, passwords, incognito tabs, banking and login pages.</p>
+  <p class="st"><a id="open" href="#">Open WorkFlowOS</a></p>
+</div><script src="popup.js"></script></body></html>
