@@ -23,6 +23,9 @@ export const api = {
   workflows: () => req<Workflow[]>("/api/workflows"),
   workflow: (id: number) => req<{ workflow: Workflow; runs: Run[] }>(`/api/workflows/${id}`),
   patchWorkflow: (id: number, b: Partial<{ status: string; spec: unknown; name: string; mode: "preview" | "auto"; said: string }>) => req<Workflow>(`/api/workflows/${id}`, body("PATCH", b)),
+  editSteps: (id: number, b: { op: "add" | "delete"; step_id?: string; after?: string | null; kind?: string; params?: Record<string, string> }) =>
+    req<{ workflow: Workflow; message: string }>(`/api/workflows/${id}/steps`, body("POST", b)),
+  answerProposal: (id: number, accept: boolean) => req<Workflow>(`/api/workflows/${id}/proposal`, body("POST", { accept })),
   runNow: (id: number, email_id?: number) => req<{ run_id: number }>(`/api/workflows/${id}/run`, body("POST", { email_id })),
   runs: (limit = 30) => req<Run[]>(`/api/runs?limit=${limit}`),
   run: (id: number) => req<Run>(`/api/runs/${id}`),

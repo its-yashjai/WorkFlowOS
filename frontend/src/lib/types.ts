@@ -4,7 +4,7 @@ export interface WfEvent { id: number; ts: string; source: string; app: AppKey; 
 
 export interface Step {
   id: string; app: AppKey; action: string; label: string; params?: Record<string, string>; out?: string[];
-  tiers?: string[]; learned_confidence?: number;
+  tiers?: string[]; learned_confidence?: number; added_by_you?: boolean;
   when?: { var: string; any: string[]; show: string[]; negate?: boolean; label: string };
 }
 export interface Spec {
@@ -17,7 +17,8 @@ export interface Spec {
 export interface Workflow {
   id: number; name: string; intent: string; status: "suggested" | "active" | "paused" | "dismissed"; spec: Spec;
   pattern: { steps: string[]; support: number; avg_seconds: number; switches: number; apps: string[]; score: number; last_seen: string };
-  learned: { aliases?: Record<string, number>; log?: string[]; mode?: "preview" | "auto"; suggest_auto?: boolean; ui?: Record<string, unknown> };
+  learned: { aliases?: Record<string, number>; log?: string[]; mode?: "preview" | "auto"; suggest_auto?: boolean; ui?: Record<string, unknown>;
+    proposal?: { signature: string; added: string[]; removed: string[]; times_seen: number; last_seen: string } };
   stats: { runs?: number; succeeded?: number; time_saved_sec?: number; last_run?: string; clean_streak?: number };
   created_at: string; updated_at: string;
 }

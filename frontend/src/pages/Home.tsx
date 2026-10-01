@@ -138,6 +138,7 @@ export default function Home() {
                         <p className="font-medium">{w.name}</p>
                         <p className="text-xs text-mist">{w.spec.trigger.label} · {w.stats.runs ?? 0} runs · saved {dur(w.stats.time_saved_sec)}</p>
                       </div>
+                      {w.learned.proposal && <Chip tone="volt">Done differently lately?</Chip>}
                       <Chip tone={w.status === "active" ? "flow" : "mist"}>{w.status === "active" ? "Active" : "Paused"}</Chip>
                     </Link>
                   </li>

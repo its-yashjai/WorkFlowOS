@@ -2,19 +2,63 @@
 import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import apps, connectors, db, discovery, engine, llm, nl_edit, sim
+from . import apps, connectors, db, discovery, engine, llm, nl_edit, sim, steps
 
-app = FastAPI(title="WorkFlowOS")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+_TASKS: set[asyncio.Task] = set()
+
+
+def spawn(coro) -> asyncio.Task:
+    """Start a background task and keep a reference to it. The event loop only holds weak references,
+    so a task nobody refers to can be garbage-collected before it finishes (see the asyncio docs)."""
+    t = asyncio.create_task(coro)
+    _TASKS.add(t)
+    t.add_done_callback(_TASKS.discard)
+    return t
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if not db.one("SELECT id FROM customers LIMIT 1"):
+        await asyncio.to_thread(sim.seed)
+        await asyncio.to_thread(discovery.refresh)
+    gmail = spawn(_gmail_loop())
+    yield
+    gmail.cancel()
+
+
+app = FastAPI(title="WorkFlowOS", lifespan=lifespan)
 AGENTS: dict[str, dict] = {}  # name -> {source, last_seen, info}
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def origin_allowed(origin: str | None, host: str | None = None) -> bool:
+    """Who may call this server: the web app itself, the desktop agent (not a browser, so no Origin header)
+    and the browser extension. A random website open in your browser may not."""
+    if not origin:
+        return True
+    if origin.startswith(("chrome-extension://", "moz-extension://")):
+        return True
+    try:
+        o = urlsplit(origin)
+    except ValueError:
+        return False
+    return o.hostname in LOCAL_HOSTS or (bool(host) and o.netloc == host)  # same page that served the app
+
+
+@app.middleware("http")
+async def only_local_callers(request: Request, call_next):
+    if not origin_allowed(request.headers.get("origin"), request.headers.get("host")):
+        return JSONResponse({"detail": "WorkFlowOS only accepts requests from this computer."}, status_code=403)
+    return await call_next(request)
 
 
 class Hub:
@@ -102,13 +146,22 @@ class SettingsIn(BaseModel):
     ollama_model: str | None = None
     user_name: str | None = None
     groq_key: str | None = None
+    ignore_apps: str | None = None      # apps and sites that are never part of a workflow
+    min_dwell_sec: int | None = None    # a switch shorter than this (with nothing done there) is a glance
 
 
 @app.put("/api/settings")
 async def put_settings(s: SettingsIn):
-    for k, v in s.model_dump(exclude_none=True).items():
+    changed = s.model_dump(exclude_none=True)
+    if "min_dwell_sec" in changed:
+        changed["min_dwell_sec"] = max(0, min(600, changed["min_dwell_sec"]))
+    if "ignore_apps" in changed:
+        changed["ignore_apps"] = ", ".join(discovery.ignore_list({"ignore_apps": changed["ignore_apps"][:1000]}))
+    for k, v in changed.items():
         db.set_setting(k, ("1" if v else "0") if isinstance(v, bool) else v)
     llm._ollama["checked"] = 0  # re-detect the local model after any settings change
+    if "ignore_apps" in changed or "min_dwell_sec" in changed:
+        await auto_discover()  # what counts as work just changed: look at the activity again
     await hub.send({"type": "state"})
     return state()
 
@@ -220,6 +273,57 @@ async def patch_workflow(wid: int, body: WorkflowPatch):
     return wf_out(db.one("SELECT * FROM workflows WHERE id=?", (wid,)))
 
 
+class StepEdit(BaseModel):
+    op: str                      # add | delete
+    step_id: str | None = None   # delete: the step to remove
+    after: str | None = None     # add: put the new step after this one (empty = first)
+    kind: str | None = None
+    params: dict | None = None
+
+
+@app.get("/api/step-kinds")
+def step_kinds():
+    return steps.KINDS
+
+
+@app.post("/api/workflows/{wid}/steps")
+async def edit_steps(wid: int, body: StepEdit):
+    """Add a step in between, or remove one. Validated, so the workflow always stays runnable."""
+    w = db.one("SELECT * FROM workflows WHERE id=?", (wid,))
+    if not w:
+        raise HTTPException(404)
+    spec = db.js(w["spec"], {})
+    try:
+        if body.op == "delete" and body.step_id:
+            new, msg = steps.delete_step(spec, body.step_id)
+        elif body.op == "add" and body.kind:
+            new, msg = steps.add_step(spec, body.after or None, body.kind, body.params)
+        else:
+            raise HTTPException(400, "Say which step to add or remove")
+    except steps.EditError as e:
+        raise HTTPException(400, str(e))
+    learned = db.js(w["learned"], {}) or {}
+    learned.setdefault("log", []).append(f"You edited the steps: {msg[:1].lower() + msg[1:]}")
+    db.ex("UPDATE workflows SET spec=?, learned=?, updated_at=? WHERE id=?",
+          (json.dumps({**new, "edited": True}), json.dumps(learned), db.now(), wid))
+    await hub.send({"type": "workflows"})
+    return {"workflow": wf_out(db.one("SELECT * FROM workflows WHERE id=?", (wid,))), "message": msg}
+
+
+class ProposalIn(BaseModel):
+    accept: bool
+
+
+@app.post("/api/workflows/{wid}/proposal")
+async def answer_proposal(wid: int, body: ProposalIn):
+    """'You seem to do this differently now': update the workflow, or keep yours. Nothing changes until you answer."""
+    w = await asyncio.to_thread(discovery.answer_proposal, wid, body.accept)
+    if not w:
+        raise HTTPException(404)
+    await hub.send({"type": "workflows"})
+    return wf_out(w)
+
+
 def _trigger_matches(spec, email):
     t = spec.get("trigger", {})
     return t.get("type") == "new_email" and (not t.get("has_attachment") or email["attachment"])
@@ -229,7 +333,7 @@ async def _start_run(wid, email):
     rid = engine.start(wid, {"type": "new_email", "email_id": email["id"], "subject": email["subject"],
                              "from": email["sender_name"]})
     await hub.send({"type": "run", "run_id": rid, "started": True})
-    asyncio.create_task(engine.execute(rid))
+    spawn(engine.execute(rid))
     return rid
 
 
@@ -245,7 +349,7 @@ async def run_now(wid: int, body: RunIn):
     if (db.js(w["spec"], {}).get("trigger") or {}).get("type") != "new_email":
         rid = engine.start(wid, {"type": "manual", "subject": w["name"], "from": "you (Run now)"})
         await hub.send({"type": "run", "run_id": rid, "started": True})
-        asyncio.create_task(engine.execute(rid))
+        spawn(engine.execute(rid))
         return {"run_id": rid}
     email = db.one("SELECT * FROM emails WHERE id=?", (body.email_id,)) if body.email_id else \
         db.one("SELECT * FROM emails WHERE handled_by IS NULL AND attachment!='' ORDER BY received_at DESC LIMIT 1")
@@ -292,7 +396,7 @@ class ResolveIn(BaseModel):
 
 @app.post("/api/runs/{rid}/resolve")
 async def resolve(rid: int, body: ResolveIn):
-    asyncio.create_task(engine.resolve(rid, body.customer_id, body.create, body.remember, body.edits, body.cancel))
+    spawn(engine.resolve(rid, body.customer_id, body.create, body.remember, body.edits, body.cancel))
     return {"ok": True}
 
 
@@ -337,7 +441,7 @@ async def mail_get(eid: int, request: Request):
     if not e:
         raise HTTPException(404)
     if actor(request) == "user":
-        asyncio.create_task(_after_user_action())
+        spawn(_after_user_action())
     return e
 
 
@@ -347,7 +451,7 @@ async def mail_attachment(eid: int, request: Request):
     if not res:
         raise HTTPException(404)
     if actor(request) == "user":
-        asyncio.create_task(_after_user_action())
+        spawn(_after_user_action())
     return Response(res[1], media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{res[0]}"'})
 
 
@@ -387,7 +491,7 @@ async def test_email(i: int = -1):
 async def crm_list(request: Request, q: str = ""):
     res = apps.search_customers(q, actor(request))
     if q and actor(request) == "user":
-        asyncio.create_task(_after_user_action())
+        spawn(_after_user_action())
     return res
 
 
@@ -406,7 +510,7 @@ async def crm_get(cid: int, request: Request, quiet: int = 0):
     if not c:
         raise HTTPException(404)
     if who == "user":
-        asyncio.create_task(_after_user_action())
+        spawn(_after_user_action())
     return c
 
 
@@ -422,7 +526,7 @@ async def crm_update(cid: int, body: CrmUpdate, request: Request):
         raise HTTPException(404)
     await hub.send({"type": "apps", "app": "crm"})
     if actor(request) == "user":
-        asyncio.create_task(_after_user_action())
+        spawn(_after_user_action())
     return c
 
 
@@ -436,7 +540,7 @@ async def chat_list(request: Request, channel: str = "#support", open: int = 0):
     ch = channel if channel.startswith("#") else "#" + channel
     if open and actor(request) == "user":  # the person switched to this channel
         apps.emit("chat", "open_channel", {"channel": ch}, target=ch)
-        asyncio.create_task(_after_user_action())
+        spawn(_after_user_action())
     return {"channels": apps.channels(), "messages": apps.list_chat(ch)}
 
 
@@ -446,7 +550,7 @@ async def chat_post(body: ChatIn, request: Request):
     mid = apps.post_chat(ch, body.text, actor(request))
     await hub.send({"type": "apps", "app": "chat"})
     if actor(request) == "user":
-        asyncio.create_task(_after_user_action())
+        spawn(_after_user_action())
     return {"id": mid}
 
 
@@ -463,7 +567,7 @@ async def _after_user_action():
     async def later():
         await asyncio.sleep(2.0)
         await auto_discover()
-    _pending_discover["task"] = asyncio.create_task(later())
+    _pending_discover["task"] = spawn(later())
 
 
 # ---------------- observed sessions (for the timeline) ----------------
@@ -474,7 +578,7 @@ def get_sessions(days: int = 7):
     wfs = [wf_out(w) for w in db.q("SELECT * FROM workflows WHERE status!='dismissed'")]
     out = []
     for sess in discovery.sessions(events, float(st.get("session_gap_min", 4))):
-        toks, groups = discovery.tokenize(sess)
+        toks, groups = discovery.tokenize(sess, st)
         matched = []
         for w in wfs:
             m = discovery.match(w["pattern"].get("steps", []), toks) if w["pattern"].get("steps") else None
@@ -536,6 +640,9 @@ async def reset_demo():
 # ---------------- websocket + static ----------------
 @app.websocket("/ws")
 async def ws(ws: WebSocket):
+    if not origin_allowed(ws.headers.get("origin"), ws.headers.get("host")):  # browsers don't apply CORS to WebSockets, so check here
+        await ws.close(code=1008)
+        return
     await ws.accept()
     hub.conns.append(ws)
     try:
@@ -546,14 +653,6 @@ async def ws(ws: WebSocket):
     finally:
         if ws in hub.conns:
             hub.conns.remove(ws)
-
-
-@app.on_event("startup")
-async def startup():
-    if not db.one("SELECT id FROM customers LIMIT 1"):
-        await asyncio.to_thread(sim.seed)
-        await asyncio.to_thread(discovery.refresh)
-    asyncio.create_task(_gmail_loop())
 
 
 async def _gmail_loop():

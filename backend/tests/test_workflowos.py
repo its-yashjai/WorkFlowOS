@@ -342,3 +342,165 @@ def test_looking_around_is_never_suggested_as_a_routine():
                   ((t + timedelta(seconds=dt * 20)).isoformat(timespec="seconds"), "agent", app, action, "", json.dumps(data)))
     names = [p["steps"] for p in discovery.mine()]
     assert all("chat.post_message" in s or "crm.update_record" in s or "mail.download_attachment" in s for s in names)
+
+
+# ---------------- noise, duplicates, asking before changing, editing steps ----------------
+def _routine_run(t, k, extra=(), notify=True, open_channel=False):
+    """One hand-done customer request starting at time t. `extra` = (seconds, app, action, data) events mixed in."""
+    c = db.q("SELECT * FROM customers")[k % 6]
+    evs = [(0, "mail", "open_email", {"email_id": 1, "from_email": c["email"], "from_name": c["name"], "subject": f"Req {k}", "attachment": f"F{k}.pdf"}),
+           (60, "mail", "download_attachment", {"email_id": 1, "filename": f"F{k}.pdf"}),
+           (120, "crm", "open_record", {"customer_id": c["id"], "company": c["company"]}),
+           (200, "crm", "update_record", {"customer_id": c["id"], "note": f"Customer request: Req {k}", "attachment": f"F{k}.pdf"})]
+    if open_channel:
+        evs.append((240, "chat", "open_channel", {"channel": "#support"}))
+    if notify:
+        evs.append((260, "chat", "post_message", {"channel": "#support", "text": f"New request from {c['name']}"}))
+    for dt, app, action, data in sorted(evs + list(extra), key=lambda e: e[0]):
+        db.ex("INSERT INTO events(ts,source,app,action,target,data) VALUES (?,?,?,?,?,?)",
+              ((t + timedelta(seconds=dt)).isoformat(timespec="seconds"), "agent", app, action, "", json.dumps(data)))
+
+
+def _labels(w):
+    return [s["label"] for s in json.loads(w["spec"])["steps"]]
+
+
+def test_a_quick_glance_at_another_app_or_tab_is_never_a_step():
+    """You peek at a chat app and a news tab for a few seconds in the middle of the routine, every time."""
+    base = datetime.now() - timedelta(hours=20)
+    glance = ((50, "desktop", "app_focus", {"process": "Notepad.exe", "title": "notes"}),   # 3 s
+              (53, "web", "navigate", {"domain": "news.example.com", "title": "News"}))       # 7 s, then back to work
+    for k in range(4):
+        _routine_run(base + timedelta(hours=3 * k), k, extra=glance)
+    discovery.refresh()
+    ws = db.q("SELECT * FROM workflows")
+    assert len(ws) == 1, "the glances must not create a second, noisy suggestion"
+    assert not any("Notepad" in l or "news.example.com" in l for l in _labels(ws[0]))
+    assert json.loads(ws[0]["pattern"])["support"] == 8  # the 4 demo runs + these 4 are the same routine
+
+
+def test_staying_in_an_app_or_acting_on_a_page_still_counts_as_work():
+    """The filter must not throw away real work: 40 s in Excel is a step, a clicked page is a step."""
+    toks, _ = discovery.tokenize([
+        {"ts": "2026-01-01T10:00:00", "app": "web", "action": "navigate", "data": json.dumps({"domain": "portal.test"})},
+        {"ts": "2026-01-01T10:00:04", "app": "web", "action": "click", "data": json.dumps({"domain": "portal.test", "text": "Export"})},
+        {"ts": "2026-01-01T10:00:10", "app": "desktop", "action": "app_focus", "data": json.dumps({"process": "EXCEL.EXE"})},
+        {"ts": "2026-01-01T10:00:50", "app": "desktop", "action": "app_focus", "data": json.dumps({"process": "Notepad.exe"})},
+        {"ts": "2026-01-01T10:00:53", "app": "mail", "action": "open_email", "data": "{}"}])
+    assert toks == ["web.portal.test", "web.portal.test.click:export", "desktop.excel", "mail.open_email"]
+
+
+def test_never_work_apps_are_ignored_however_long_you_stay():
+    base = datetime.now() - timedelta(hours=20)
+    video = ((1, "web", "navigate", {"domain": "www.youtube.com", "title": "YouTube"}),
+             (5, "web", "click", {"domain": "www.youtube.com", "text": "Play"}),
+             (25, "desktop", "app_focus", {"process": "WhatsApp.exe", "title": "WhatsApp"}))
+    for k in range(4):
+        _routine_run(base + timedelta(hours=3 * k), k, extra=video)  # 40 s of video + chat before carrying on
+    discovery.refresh()
+    ws = db.q("SELECT * FROM workflows")
+    assert len(ws) == 1 and not any("youtube" in l.lower() or "whatsapp" in l.lower() for l in _labels(ws[0]))
+    # the list is yours to edit: take an app off it and it counts again
+    db.set_setting("ignore_apps", "youtube")
+    assert "whatsapp" not in discovery.ignore_list() and "youtube" in discovery.ignore_list()
+    assert not discovery._ignored({"app": "web", "data": json.dumps({"domain": "dropbox.com"})}, ["x.com"])
+
+
+def test_the_same_routine_is_never_suggested_twice():
+    """Even with the noise filter off, variations and pieces of one routine are one suggestion."""
+    db.set_setting("min_dwell_sec", "0"); db.set_setting("ignore_apps", "")
+    base = datetime.now() - timedelta(hours=20)
+    noise = ((30, "desktop", "app_focus", {"process": "Notepad.exe", "title": "notes"}),)
+    for k in range(4):
+        _routine_run(base + timedelta(hours=3 * k), k, extra=noise)
+    discovery.refresh()
+    assert [w["name"] for w in db.q("SELECT * FROM workflows")] == ["Process customer request"]
+    discovery.refresh()  # and looking again doesn't add anything
+    assert db.one("SELECT COUNT(*) n FROM workflows")["n"] == 1
+
+
+def test_a_dismissed_routine_does_not_come_back_as_a_variation():
+    discovery.refresh()
+    w = db.one("SELECT * FROM workflows")
+    db.ex("UPDATE workflows SET status='dismissed' WHERE id=?", (w["id"],))
+    base = datetime.now() - timedelta(hours=10)
+    for k in range(3):
+        _routine_run(base + timedelta(hours=2 * k), k, notify=False)  # now without telling the team
+    discovery.refresh()
+    ws = db.q("SELECT * FROM workflows")
+    assert len(ws) == 1 and ws[0]["status"] == "dismissed" and "proposal" not in json.loads(ws[0]["learned"])
+
+
+def test_a_new_way_of_working_is_proposed_not_applied_and_asks_only_once():
+    w = active_workflow()
+    before = db.one("SELECT spec FROM workflows WHERE id=?", (w["id"],))["spec"]
+    base = datetime.now() - timedelta(hours=10)
+    for k in range(3):
+        _routine_run(base + timedelta(hours=2 * k), k, notify=False)
+    discovery.refresh()
+    ws = db.q("SELECT * FROM workflows")
+    assert len(ws) == 1, "a variation of an approved workflow is not a new suggestion"
+    assert [s["id"] for s in json.loads(ws[0]["spec"])["steps"]] == [s["id"] for s in json.loads(before)["steps"]]  # untouched
+    prop = json.loads(ws[0]["learned"])["proposal"]
+    assert prop["removed"] == ["Notify the team in #support"] and prop["added"] == []
+    # "Keep mine": the workflow stays as it is and the same variation is never proposed again
+    discovery.answer_proposal(w["id"], accept=False)
+    discovery.refresh()
+    kept = db.one("SELECT * FROM workflows WHERE id=?", (w["id"],))
+    assert "proposal" not in json.loads(kept["learned"]) and len(json.loads(kept["spec"])["steps"]) == 5
+    assert db.one("SELECT COUNT(*) n FROM workflows")["n"] == 1
+
+
+def test_accepting_a_proposal_keeps_your_own_edits_and_added_steps():
+    from app import steps
+    w = active_workflow()
+    spec = json.loads(db.one("SELECT spec FROM workflows WHERE id=?", (w["id"],))["spec"])
+    next(s for s in spec["steps"] if s["id"] == "update")["params"]["note"] = "MY WORDING {{subject}}"
+    spec, _ = steps.add_step(spec, "find", "manual", {"label": "Check the contract in the shared drive"})
+    db.ex("UPDATE workflows SET spec=? WHERE id=?", (json.dumps({**spec, "edited": True}), w["id"]))
+    base = datetime.now() - timedelta(hours=10)
+    for k in range(3):
+        _routine_run(base + timedelta(hours=2 * k), k, notify=False)
+    discovery.refresh()
+    assert json.loads(db.one("SELECT learned FROM workflows WHERE id=?", (w["id"],))["learned"])["proposal"]["removed"] == ["Notify the team in #support"]
+    discovery.answer_proposal(w["id"], accept=True)
+    new = json.loads(db.one("SELECT spec FROM workflows WHERE id=?", (w["id"],))["spec"])
+    assert [s["action"] for s in new["steps"]] == ["read_email", "download_attachment", "find_customer", "manual", "update_customer"]
+    assert next(s for s in new["steps"] if s["id"] == "update")["params"]["note"] == "MY WORDING {{subject}}"
+    discovery.refresh()  # the old way (with the team message) is history: it isn't proposed back
+    assert "proposal" not in json.loads(db.one("SELECT learned FROM workflows WHERE id=?", (w["id"],))["learned"])
+    assert db.one("SELECT COUNT(*) n FROM workflows")["n"] == 1
+
+
+def test_steps_can_be_removed_and_added_in_between_but_never_into_a_broken_workflow():
+    from app import steps
+    w = active_workflow()
+    spec = json.loads(w["spec"])
+    with pytest.raises(steps.EditError, match="needs the customer id"):
+        steps.delete_step(spec, "find")          # "Update the customer record" still needs the customer
+    with pytest.raises(steps.EditError, match="after"):
+        steps.add_step(spec, "read", "crm_note", {"note": "too early"})  # no customer found yet at that point
+    with pytest.raises(steps.EditError, match="isn't known yet"):
+        steps.add_step(spec, None, "notify", {"channel": "#ops", "text": "{{customer_name}} wrote"})
+    with pytest.raises(steps.EditError):
+        steps.add_step(spec, "find", "open_page", {"url": "javascript:alert(1)"})
+    spec, _ = steps.delete_step(spec, "notify")
+    spec, _ = steps.add_step(spec, "find", "notify", {"channel": "finance", "text": "Heads up: {{customer_name}} ({{company}}) sent {{attachment}}"})
+    assert [s["action"] for s in spec["steps"]] == ["read_email", "download_attachment", "find_customer", "send_message", "update_customer"]
+    db.ex("UPDATE workflows SET spec=? WHERE id=?", (json.dumps(spec), w["id"]))
+    rid = start_for(w, 0)
+    run(engine.execute(rid))
+    assert engine._load(rid)["status"] == "done"
+    assert any(m["text"] == "Heads up: Kabir Shah (Finlyte) sent W9_Finlyte_2026.pdf" for m in apps.list_chat("#finance"))
+    assert not any("Kabir" in m["text"] and m["bot"] for m in apps.list_chat("#support"))  # the removed step didn't run
+
+
+def test_only_this_computer_and_the_extension_may_call_the_server():
+    from app import main
+    ok = main.origin_allowed
+    assert ok(None)                                            # desktop agent: not a browser, no Origin header
+    assert ok("http://localhost:8765") and ok("http://127.0.0.1:5173")
+    assert ok("chrome-extension://abcdefghijklmnop")
+    assert ok("http://192.168.1.7:5173", host="192.168.1.7:5173")   # the page that served the app
+    assert not ok("https://evil.example") and not ok("https://evil.example", host="localhost:8765")
+    assert not ok("http://localhost.evil.example")

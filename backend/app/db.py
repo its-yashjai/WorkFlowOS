@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 DEFAULTS = {"observing": "1", "api_outage": "0", "user_name": "Yash", "groq_key": "", "jev_key": "",
-            "session_gap_min": "4", "min_support": "2"}
+            "session_gap_min": "4", "min_support": "2", "min_dwell_sec": "20",
+            "ignore_apps": "whatsapp, telegram, discord, spotify, youtube, netflix, primevideo, hotstar, instagram, facebook, twitter, x.com, reddit"}
 
 
 def now() -> str:

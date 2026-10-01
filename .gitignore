@@ -4,3 +4,5 @@ __pycache__/
 backend/*.db
 backend/.browser-profile/
 .pytest_cache/
+# real attachments imported from your Gmail stay on your computer
+backend/files/inbox/

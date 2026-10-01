@@ -61,12 +61,82 @@ def sessions(events: list[dict], gap_min: float) -> list[list[dict]]:
     return out
 
 
-def tokenize(sess: list[dict]):
-    """Collapse consecutive duplicates; keep which events belong to each token."""
+PASSIVE_WEB = "navigate"
+WEB_ACTIONS = ("click", "form_submit", "download")
+DEFAULT_IGNORE = "whatsapp, telegram, discord, spotify, youtube, netflix, primevideo, hotstar, instagram, facebook, twitter, x.com, reddit"
+
+
+def ignore_list(st: dict | None = None) -> list[str]:
+    """Apps and sites that are never part of a workflow (editable in Settings)."""
+    raw = (st if st is not None else db.settings()).get("ignore_apps", DEFAULT_IGNORE)
+    return [x.strip().lower().removesuffix(".exe") for x in re.split(r"[,\n]", raw or "") if x.strip()]
+
+
+def _ignored(e: dict, ign: list[str]) -> bool:
+    if not ign or e["app"] not in ("desktop", "web"):
+        return False
+    d = db.js(e.get("data"), {}) or {}
+    if e["app"] == "desktop":
+        proc = (d.get("process") or "").lower().removesuffix(".exe")
+        return any(proc == x or proc.startswith(x) for x in ign if "." not in x)
+    dom = (d.get("domain") or "").lower().replace("www.", "").split(":")[0]
+    labels = dom.split(".")
+    return any((dom == x or dom.endswith("." + x)) if "." in x else x in labels for x in ign)
+
+
+def _where(e: dict) -> str | None:
+    """Which place an event happened in, for measuring how long you stayed somewhere."""
+    d = db.js(e.get("data"), {}) or {}
+    if e["app"] == "desktop":
+        proc = (d.get("process") or "").lower()
+        return "browser" if proc in BROWSERS else "desktop:" + proc
+    if e["app"] == "web":
+        return "web:" + (d.get("domain") or "").replace("www.", "")
+    if e["app"] == "files":
+        return None  # a file landing in a folder doesn't say where you are
+    return e["app"]
+
+
+def _is_passive(e: dict) -> bool:
+    """Only switching to an app or opening a page: looking, not doing."""
+    return (e["app"] == "desktop" and e["action"] == "app_focus") or (e["app"] == "web" and e["action"] == PASSIVE_WEB)
+
+
+def _stayed(sess: list[dict], i: int, min_dwell: float) -> bool:
+    """A switch counts only if you did something there, or stayed long enough. A quick glance is ignored."""
+    e = sess[i]
+    here = _where(e)
+    for nxt in sess[i + 1:]:
+        w = _where(nxt)
+        if w is None:
+            continue
+        if w == here:
+            if nxt["app"] == "web" and nxt["action"] in WEB_ACTIONS:
+                return True  # you clicked / submitted / downloaded on that page
+            continue
+        if here.startswith("web:") and w == "browser":
+            continue  # the browser window coming to the front is still the same page
+        return (ts(nxt["ts"]) - ts(e["ts"])).total_seconds() >= min_dwell
+    return True  # last thing in the task: you stayed there until you stopped
+
+
+def tokenize(sess: list[dict], st: dict | None = None):
+    """Collapse consecutive duplicates; keep which events belong to each token.
+    Quick glances at another app or tab, and apps on the never-work list, are dropped."""
+    st = st if st is not None else db.settings()
+    ign = ignore_list(st)
+    try:
+        min_dwell = float(st.get("min_dwell_sec", 20))
+    except (TypeError, ValueError):
+        min_dwell = 20.0
     toks, groups = [], []
-    for e in sess:
+    for i, e in enumerate(sess):
         t = token(e)
         if not t:
+            continue
+        if _ignored(e, ign):
+            continue
+        if _is_passive(e) and not _stayed(sess, i, min_dwell):
             continue
         if toks and toks[-1] == t:
             groups[-1].append(e)
@@ -128,11 +198,60 @@ def _switches(pattern):
     return sum(1 for x, y in zip(a, a[1:]) if x != y)
 
 
+def shape(steps) -> tuple:
+    """The steps as the generated workflow would show them. Two patterns with the same shape are the same
+    workflow to a person (e.g. searching vs clicking the customer, or opening the channel before posting)."""
+    out = []
+    for t in steps:
+        if t == "mail.open_email":
+            k = "read"
+        elif t in ("mail.download_attachment", "files.file_saved"):
+            k = "download"
+        elif t in ("crm.search", "crm.open_record"):
+            k = "find"
+        elif t == "crm.update_record":
+            k = "update"
+        elif t == "chat.post_message":
+            k = "notify"
+        elif t == "chat.open_channel":
+            continue
+        elif t.startswith("web.") and t.endswith(".download") and out and out[-1].startswith("web.") and ".click:" in out[-1]:
+            continue  # the click before it already downloads the file
+        else:
+            k = t
+        if k in ("download", "find") and k in out:
+            continue
+        out.append(k)
+    return tuple(out)
+
+
+def _just_looking(k: str) -> bool:
+    """A step that is only 'was in this app / had this page open', with nothing done there."""
+    return k.startswith("desktop.") or (k.startswith("web.") and not _does(k))
+
+
+def clean_shape(steps) -> tuple:
+    """The shape without the just-looking steps: what the routine is really made of."""
+    return tuple(k for k in shape(steps) if not _just_looking(k))
+
+
+def core(steps) -> tuple:
+    """Only the steps that change or produce something."""
+    return tuple(t for t in steps if _does(t))
+
+
+def related(a, b) -> bool:
+    """Same routine done slightly differently: one's steps sit inside the other's."""
+    sa, sb = shape(a), shape(b)
+    return _subseq(sa, sb) or _subseq(sb, sa)
+
+
 def mine(min_support: int = 2, gap_min: float = 4.0) -> list[dict]:
     events = db.q("SELECT * FROM events ORDER BY ts, id")
+    st = db.settings()
     tasks = []
     for s in sessions(events, gap_min):
-        toks, groups = tokenize(s)
+        toks, groups = tokenize(s, st)
         if len(toks) >= 3:
             tasks.append((toks, groups))
     cands = set()
@@ -144,12 +263,11 @@ def mine(min_support: int = 2, gap_min: float = 4.0) -> list[dict]:
                     cands.add(c)
     found = {}
     for c in cands:
-        occ = []
-        for toks, groups in tasks:
+        occ = {}
+        for ti, (toks, groups) in enumerate(tasks):
             m = match(c, toks)
             if m:
-                evs = [e for k in range(m[0], m[-1] + 1) for e in groups[k]]
-                occ.append(evs)
+                occ[ti] = [e for k in range(m[0], m[-1] + 1) for e in groups[k]]
         if len(occ) >= min_support and len({_ctx(t) for t in c}) >= 2 and any(_does(t) for t in c):
             found[c] = occ
     # keep maximal patterns only
@@ -158,9 +276,31 @@ def mine(min_support: int = 2, gap_min: float = 4.0) -> list[dict]:
         # a shorter pattern that lives inside a longer one (even with gaps) is the same routine, not a new one
         subsumed = any(len(o) > len(c) and len(found[o]) >= 0.6 * len(occ) and _subseq(c, o) for o in found)
         if not subsumed:
-            keep[c] = occ
+            keep[c] = dict(occ)
+    # the same routine must never be suggested twice
+    # (a) variants: the same steps, give or take an app or tab you had open on the way -> one routine,
+    #     counted together. The cleanest version (fewest just-looking steps) is the one that is kept.
+    def _looks(c):
+        return sum(1 for k in shape(c) if _just_looking(k))
+    merged = {}
+    for c in sorted(keep, key=lambda c: (_looks(c), -len(keep[c]), len(c), c)):
+        twin = next((m for m in merged if clean_shape(m) == clean_shape(c) and clean_shape(c)), None)
+        if twin is None:
+            merged[c] = keep[c]
+        else:
+            for ti, evs in keep[c].items():
+                merged[twin].setdefault(ti, evs)
+    # (b) pieces: a part of a longer routine, seen mostly in the same tasks, is that routine, not a new one
+    final = {}
+    for c in sorted(merged, key=lambda c: (-len(shape(c)), -len(merged[c]), c)):
+        bigger = [f for f in final if len(shape(f)) > len(shape(c)) and _subseq(shape(c), shape(f))]
+        covered = {ti for f in bigger for ti in final[f]} & set(merged[c])
+        if bigger and len(covered) >= 0.6 * len(merged[c]):
+            continue
+        final[c] = merged[c]
     out = []
-    for c, occ in keep.items():
+    for c, occ_by_task in final.items():
+        occ = [occ_by_task[ti] for ti in sorted(occ_by_task)]
         durs = [(ts(o[-1]["ts"]) - ts(o[0]["ts"])).total_seconds() for o in occ]
         avg = sum(durs) / len(durs)
         score = len(occ) * len(c) * (1 + _switches(c)) * max(1.0, avg / 60)
@@ -378,18 +518,104 @@ def signature(steps) -> str:
     return hashlib.md5("|".join(steps).encode()).hexdigest()[:12]
 
 
+def _step_key(s: dict) -> tuple:
+    p = s.get("params") or {}
+    if s["app"] == "web":
+        return (s["action"], p.get("url"), p.get("text"))
+    if s["action"] == "manual":
+        return (s["action"], s["label"])
+    return (s["app"], s["action"])
+
+
+def step_diff(cur: dict, new: dict) -> tuple[list[str], list[str]]:
+    """Step labels the new way adds and removes, compared with the workflow as it is now.
+    Steps you added by hand are yours: they are never reported as removed."""
+    ck, nk = [_step_key(s) for s in cur["steps"]], [_step_key(s) for s in new["steps"]]
+    added = [s["label"] for s in new["steps"] if _step_key(s) not in ck]
+    removed = [s["label"] for s in cur["steps"] if _step_key(s) not in nk and not s.get("added_by_you")]
+    return added, removed
+
+
+def merge_spec(cur: dict, new: dict) -> dict:
+    """Take the new order and steps, but keep everything you already customised on steps that stay,
+    and keep the steps you added by hand (after the same step they followed before)."""
+    pool = [s for s in cur["steps"] if not s.get("added_by_you")]
+    used, steps = set(), []
+
+    def put(st):
+        st = json.loads(json.dumps(st))
+        if st["id"] in used:
+            n = 2
+            while f"{st['id']}_{n}" in used:
+                n += 1
+            st["id"] = f"{st['id']}_{n}"
+        used.add(st["id"])
+        steps.append(st)
+
+    for s in new["steps"]:
+        k = _step_key(s)
+        keep = next((x for x in pool if _step_key(x) == k), None)
+        if keep:
+            pool.remove(keep)
+        put(keep or s)
+    for i, s in enumerate(cur["steps"]):  # your own steps go back after the step they used to follow
+        if not s.get("added_by_you"):
+            continue
+        prev = cur["steps"][i - 1]["id"] if i else None
+        at = next((j + 1 for j, x in enumerate(steps) if x["id"] == prev), 0 if prev is None else len(steps))
+        st = json.loads(json.dumps(s))
+        while st["id"] in used:
+            st["id"] += "_"
+        used.add(st["id"])
+        steps.insert(at, st)
+    out = json.loads(json.dumps(cur))
+    out["steps"] = steps
+    ids = {s["id"] for s in steps}
+    out["conditions"] = [c for c in new.get("conditions", []) if c["after"] in ids]
+    out["trigger"], out["variables"], out["evidence"] = new["trigger"], new["variables"], new["evidence"]
+    return out
+
+
+def same_routine(a, b) -> bool:
+    """Is pattern `a` the same routine as `b`, just done a little differently?
+    Yes if they do the same actions (only the looking-around differs), or if one sits inside the other and
+    they differ by at most two steps. A much shorter or longer sequence is a different routine."""
+    if not related(a, b):
+        return False
+    return core(a) == core(b) or abs(len(shape(a)) - len(shape(b))) <= 2
+
+
+def _find_related(p_steps, rows):
+    """An existing workflow (any status) that is the same routine as this pattern."""
+    best, best_n = None, -1
+    for r in rows:
+        r_steps = (db.js(r["pattern"], {}) or {}).get("steps") or []
+        if r_steps and same_routine(p_steps, r_steps):
+            n = len(set(shape(p_steps)) & set(shape(r_steps)))
+            if n > best_n:
+                best, best_n = r, n
+    return best
+
+
 def refresh() -> list[int]:
-    """Mine patterns and upsert suggestions. Active/dismissed workflows keep their status."""
+    """Mine patterns and upsert suggestions. Active/dismissed workflows keep their status.
+
+    A routine is never suggested twice: a pattern that is the same routine as an existing workflow (in any
+    status, dismissed included) never becomes a new card. If it shows you now do the routine differently,
+    the existing workflow gets a *proposal* that you accept or decline. Nothing is changed without asking."""
     st = db.settings()
-    pats = mine(int(st.get("min_support", 2)), float(st.get("session_gap_min", 4)))
-    ids = []
-    for p in pats[:6]:
+    pats = mine(int(st.get("min_support", 2)), float(st.get("session_gap_min", 4)))[:6]
+    rows = db.q("SELECT * FROM workflows")
+    by_sig = {r["signature"]: r for r in rows}
+    ids, proposed = [], {}
+    exact = {by_sig[signature(p["steps"])]["id"] for p in pats if signature(p["steps"]) in by_sig}
+    for p in pats:
         sig = signature(p["steps"])
         spec = generate(p)
         pat = {"steps": p["steps"], "support": p["support"], "avg_seconds": p["avg_seconds"],
                "switches": p["switches"], "apps": p["apps"], "score": p["score"],
                "last_seen": p["occurrences"][-1][-1]["ts"]}
-        row = db.one("SELECT * FROM workflows WHERE signature=?", (sig,))
+        row = by_sig.get(sig)
         if row:
             cur = db.js(row["spec"], {}) or {}
             if row["status"] == "suggested" and not cur.get("edited"):
@@ -400,13 +626,80 @@ def refresh() -> list[int]:
                 db.ex("UPDATE workflows SET spec=?, pattern=?, updated_at=? WHERE id=?",
                       (json.dumps(cur), json.dumps(pat), db.now(), row["id"]))
             ids.append(row["id"])
-        else:
-            ids.append(db.ex("""INSERT INTO workflows(name,intent,status,spec,pattern,signature,created_at,updated_at)
-                                VALUES (?,?,?,?,?,?,?,?)""",
-                             (spec["name"], spec["description"], "suggested", json.dumps(spec), json.dumps(pat), sig,
-                              db.now(), db.now())))
+            continue
+        rel = _find_related(p["steps"], rows)
+        if rel:  # the same routine already has a card: never add a second one
+            ids.append(rel["id"])
+            if rel["status"] == "dismissed":
+                continue  # you said no to this routine; a variation of it doesn't come back
+            learned = db.js(rel["learned"], {}) or {}
+            cur = db.js(rel["spec"], {}) or {}
+            cur_pat = db.js(rel["pattern"], {}) or {}
+            added, removed = step_diff(cur, spec)
+            if not added and not removed:
+                # same steps (only the looking-around differs): count it; the workflow itself is untouched
+                if rel["id"] not in exact:
+                    cur["evidence"] = spec["evidence"]
+                    db.ex("UPDATE workflows SET spec=?, pattern=?, signature=?, updated_at=? WHERE id=?",
+                          (json.dumps(cur), json.dumps(pat), sig, db.now(), rel["id"]))
+                continue
+            if sig in (learned.get("declined") or []):
+                continue  # you already said "keep mine" to this variation
+            if rel["id"] in exact and pat["last_seen"] <= (cur_pat.get("last_seen") or ""):
+                continue  # an older way of doing it, not how you work now
+            if rel["id"] not in proposed or pat["last_seen"] > proposed[rel["id"]]["last_seen"]:
+                proposed[rel["id"]] = {"signature": sig, "pattern": pat, "spec": spec, "added": added, "removed": removed,
+                                       "times_seen": p["support"], "last_seen": pat["last_seen"]}
+            continue
+        ids.append(db.ex("""INSERT INTO workflows(name,intent,status,spec,pattern,signature,created_at,updated_at)
+                            VALUES (?,?,?,?,?,?,?,?)""",
+                         (spec["name"], spec["description"], "suggested", json.dumps(spec), json.dumps(pat), sig,
+                          db.now(), db.now())))
+    # proposals: set the new ones, clear the ones that no longer apply
+    for r in rows:
+        learned = db.js(r["learned"], {}) or {}
+        new_p, old_p = proposed.get(r["id"]), learned.get("proposal")
+        if new_p:
+            if not old_p or old_p.get("signature") != new_p["signature"] or old_p.get("times_seen") != new_p["times_seen"]:
+                learned["proposal"] = new_p
+                db.ex("UPDATE workflows SET learned=? WHERE id=?", (json.dumps(learned), r["id"]))
+        elif old_p:
+            learned.pop("proposal")
+            db.ex("UPDATE workflows SET learned=? WHERE id=?", (json.dumps(learned), r["id"]))
     # a suggestion that no longer matches how you work (and that you never approved or edited) is withdrawn
     for w in db.q("SELECT id, spec FROM workflows WHERE status='suggested'"):
         if w["id"] not in ids and not (db.js(w["spec"], {}) or {}).get("edited"):
             db.ex("DELETE FROM workflows WHERE id=?", (w["id"],))
-    return ids
+    return list(dict.fromkeys(ids))
+
+
+def answer_proposal(wid: int, accept: bool) -> dict | None:
+    """You answered 'you seem to do this differently now': update the workflow, or keep yours."""
+    w = db.one("SELECT * FROM workflows WHERE id=?", (wid,))
+    if not w:
+        return None
+    learned = db.js(w["learned"], {}) or {}
+    prop = learned.pop("proposal", None)
+    if not prop:
+        return w
+    declined = learned.setdefault("declined", [])
+    if accept:
+        cur = db.js(w["spec"], {}) or {}
+        new = merge_spec(cur, prop["spec"])
+        if cur.get("edited"):
+            new["edited"] = True
+        if w["signature"] not in declined:
+            declined.append(w["signature"])  # the old way shouldn't be proposed back
+        learned.setdefault("log", []).append("You updated it to match how you work now"
+                                             + (": added " + ", ".join(prop["added"]) if prop["added"] else "")
+                                             + (": removed " + ", ".join(prop["removed"]) if prop["removed"] else ""))
+        taken = db.one("SELECT id FROM workflows WHERE signature=? AND id!=?", (prop["signature"], wid))
+        db.ex("UPDATE workflows SET spec=?, pattern=?, learned=?, signature=?, updated_at=? WHERE id=?",
+              (json.dumps(new), json.dumps(prop["pattern"]), json.dumps(learned),
+               w["signature"] if taken else prop["signature"], db.now(), wid))
+    else:
+        if prop["signature"] not in declined:
+            declined.append(prop["signature"])
+        learned.setdefault("log", []).append("You kept your version when I noticed a different way of doing it")
+        db.ex("UPDATE workflows SET learned=?, updated_at=? WHERE id=?", (json.dumps(learned), db.now(), wid))
+    return db.one("SELECT * FROM workflows WHERE id=?", (wid,))

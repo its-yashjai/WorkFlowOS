@@ -12,7 +12,7 @@
   <img alt="Ollama" src="https://img.shields.io/badge/Ollama-on--device%20AI-000000?logo=ollama&logoColor=white" />
   <img alt="Gmail" src="https://img.shields.io/badge/Gmail-connected-EA4335?logo=gmail&logoColor=white" />
   <img alt="Slack" src="https://img.shields.io/badge/Slack-connected-4A154B?logo=slack&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Tests-18%20passing-5BE49B" />
+  <img alt="Tests" src="https://img.shields.io/badge/Tests-27%20passing-5BE49B" />
 </p>
 
 <p align="center"><i>Built for the TechStackX Hackathon · CMRIT × 7thGear</i></p>
@@ -73,12 +73,18 @@ Activity is split into tasks wherever you pause for a few minutes. WorkFlowOS th
 
 - Different ways of doing the same thing count as the same step: searching for a customer and clicking them in the list are both "find the customer".
 - A routine must actually **do** something (save, send, download, submit). Just looking around is never suggested.
+- **Quick glances are ignored.** Switching to another app or tab only counts if you stay there about 20 seconds or actually do something there. Apps on your "never part of work" list (WhatsApp, YouTube and similar, editable in Settings) are skipped however long you stay.
+- **The same routine is never suggested twice.** Variations and pieces of one routine are counted together as one suggestion, and a routine you dismissed doesn't come back as a "new" variant.
 
 ### 3 · Generate and approve
 
 The routine becomes a readable workflow. It shows *why* it's suggested: how many times you did it, how long it took and how many app switches. It includes the rule the problem statement asks for: **if the customer can't be found, stop and ask**. It even learns the wording of your team message from what you typed, and turns it into a template.
 
 <img src="docs/screenshots/03-workflow-approval.jpg" alt="The generated workflow waiting for approval" width="900" />
+
+**It asks before changing a workflow.** If you start doing a routine differently, WorkFlowOS doesn't touch the workflow. It shows what changed (for example "− Notify the team") and you choose **Update the workflow** or **Keep mine**. Updating keeps your own wording, conditions and added steps.
+
+**Add or remove steps yourself.** On the workflow page, use **+** to insert a step in between (notify a channel, add a CRM note, open a page, click a button, or a step you do yourself) and the bin to remove one. Every edit is checked, so you can't remove a step that a later step still needs.
 
 ---
 
@@ -267,6 +273,7 @@ Everything works without the extras. The built-in Mailbox, Ledger CRM and Huddle
 - 💻 The AI runs locally, and **Local AI only** is on by default
 - ⏸️ Observing can be paused at any time from Settings
 - 🧾 The automation's own actions are never mistaken for yours
+- 🚪 The server only answers this computer: the web app, the desktop agent and the browser extension. A website open in your browser can't call it
 
 ---
 
@@ -280,7 +287,7 @@ Everything works without the extras. The built-in Mailbox, Ledger CRM and Huddle
 | AI | Ollama with qwen2.5:3b, on-device · optional Groq cloud fallback, off by default |
 | Real apps | Gmail over IMAP (App Password, read-only) · Slack Incoming Webhooks |
 | Observers | Python desktop agent (no extra installs) · Chrome extension (Manifest V3) |
-| Quality | 18 automated backend tests · full browser end-to-end runs of every demo path |
+| Quality | 27 automated backend tests · full browser end-to-end runs of every demo path |
 
 ### What's inside
 

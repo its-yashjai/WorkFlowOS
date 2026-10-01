@@ -1,5 +1,5 @@
-import { Cpu, Download, Eye, KeyRound, MonitorDot, RotateCcw, ServerCrash, ShieldCheck, Unplug, MonitorPlay, Wand2 } from "lucide-react";
-import { useState } from "react";
+import { Cpu, Download, Eye, EyeOff, KeyRound, MonitorDot, RotateCcw, ServerCrash, ShieldCheck, Unplug, MonitorPlay, Wand2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { api } from "../lib/api";
 import { timeAgo } from "../lib/format";
@@ -11,8 +11,14 @@ export default function SettingsSheet({ open, onClose }: { open: boolean; onClos
   const { state, refresh, toast } = useApp();
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ignore, setIgnore] = useState("");
+  const [dwell, setDwell] = useState("20");
+  useEffect(() => {
+    if (open && state) { setIgnore(state.settings.ignore_apps ?? ""); setDwell(state.settings.min_dwell_sec ?? "20"); }
+  }, [open]);  // load once per opening, so typing isn't overwritten by live updates
   if (!state) return null;
   const s = state.settings;
+  const noiseChanged = ignore.trim() !== (s.ignore_apps ?? "").trim() || dwell !== (s.min_dwell_sec ?? "20");
   const save = async (p: Record<string, unknown>) => { await api.settings(p); await refresh(); };
   return (
     <Sheet open={open} onClose={onClose} title="Settings">
@@ -44,6 +50,30 @@ export default function SettingsSheet({ open, onClose }: { open: boolean; onClos
             <a href="/downloads/wfos_extension.zip" download><Button size="sm" icon={<Download className="h-3.5 w-3.5" />}>Browser extension</Button></a>
           </div>
           <p className="text-xs text-faint">Agent: <code>python wfos_agent.py</code>. Extension: unzip, then Chrome → Extensions → Developer mode → Load unpacked.</p>
+        </section>
+
+        <section className="space-y-3 rounded-2xl border hairline bg-white/[0.03] p-4">
+          <h3 className="flex items-center gap-2 font-display text-base font-semibold"><EyeOff className="h-4 w-4 text-hand" />What doesn't count as work</h3>
+          <p className="text-sm text-mist">Quick switches to another app or tab are ignored, so they never end up as steps in a workflow.</p>
+          <label className="block text-sm">Never part of a workflow
+            <textarea rows={2} value={ignore} onChange={(e) => setIgnore(e.target.value)} placeholder="whatsapp, youtube, spotify"
+              className="mt-1 w-full resize-none rounded-xl border border-white/12 bg-white/[0.04] px-3 py-2 text-sm outline-none placeholder:text-faint focus:border-volt" />
+            <span className="mt-1 block text-xs text-faint">App names or websites, separated by commas. These are skipped however long you stay.</span>
+          </label>
+          <label className="flex items-center justify-between gap-4 text-sm">
+            <span>Ignore a switch shorter than
+              <span className="block text-xs text-faint">Unless you clicked, submitted or downloaded something there.</span>
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              <input type="number" min={0} max={600} value={dwell} onChange={(e) => setDwell(e.target.value)} aria-label="Seconds"
+                className="h-10 w-20 rounded-xl border border-white/12 bg-white/[0.04] px-3 text-sm outline-none focus:border-volt" />
+              <span className="text-mist">seconds</span>
+            </span>
+          </label>
+          <Button size="sm" variant="primary" disabled={!noiseChanged} onClick={async () => {
+            await save({ ignore_apps: ignore, min_dwell_sec: Math.max(0, Math.min(600, parseInt(dwell || "0", 10) || 0)) });
+            toast("Saved. I looked at your activity again with the new rules", "good");
+          }}>Save</Button>
         </section>
 
         <RealApps />

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, Brain, CheckCircle2, Hand, LoaderCircle, Pause, Pencil, Play, ShieldCheck, Sparkles, X, XCircle, Eye, Rocket, Undo2 } from "lucide-react";
+import { ArrowLeft, Brain, CheckCircle2, GitCompareArrows, Hand, ListPlus, LoaderCircle, Minus, Pause, Pencil, Play, Plus, ShieldCheck, Sparkles, X, XCircle, Eye, Rocket, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AppGlyph from "../components/AppGlyph";
@@ -88,6 +88,32 @@ function Autonomy({ w, onChange }: { w: Workflow; onChange: (w: Workflow) => voi
   );
 }
 
+/** "You seem to do this differently now." Nothing changes until you choose. */
+function Variation({ w, onAnswer }: { w: Workflow; onAnswer: (w: Workflow, accepted: boolean) => void }) {
+  const p = w.learned.proposal;
+  const [busy, setBusy] = useState<"yes" | "no" | null>(null);
+  if (!p) return null;
+  const answer = async (accept: boolean) => {
+    setBusy(accept ? "yes" : "no");
+    try { onAnswer(await api.answerProposal(w.id, accept), accept); } finally { setBusy(null); }
+  };
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={softSpring} className="rounded-3xl border border-volt/40 bg-volt/[0.07] p-5">
+      <p className="flex items-center gap-2 font-medium text-volt"><GitCompareArrows className="h-4 w-4" />You seem to do this differently now</p>
+      <p className="mt-1 text-sm text-paper/90">I've now seen a slightly different version of this routine <b>{p.times_seen} times</b>. I haven't changed anything.</p>
+      <ul className="mt-3 space-y-1 text-sm">
+        {p.added.map((l) => <li key={"a" + l} className="flex items-center gap-2 text-ok"><Plus className="h-3.5 w-3.5 shrink-0" />{l}</li>)}
+        {p.removed.map((l) => <li key={"r" + l} className="flex items-center gap-2 text-bad"><Minus className="h-3.5 w-3.5 shrink-0" /><span className="line-through decoration-bad/60">{l}</span></li>)}
+      </ul>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button variant="primary" busy={busy === "yes"} onClick={() => answer(true)}>Update the workflow</Button>
+        <Button busy={busy === "no"} onClick={() => answer(false)}>Keep mine</Button>
+      </div>
+      <p className="mt-2 text-xs text-faint">Updating keeps your own wording, conditions and any steps you added. If you keep yours, I won't ask about this again.</p>
+    </motion.div>
+  );
+}
+
 export default function WorkflowPage() {
   const id = Number(useParams().id);
   const nav = useNavigate();
@@ -95,6 +121,7 @@ export default function WorkflowPage() {
   const [w, setW] = useState<Workflow | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [editing, setEditing] = useState(false);
+  const [shaping, setShaping] = useState(false);  // adding / removing steps
   const [proposal, setProposal] = useState<AskResult | null>(null);
   const [justChanged, setJustChanged] = useState<Set<string> | undefined>(undefined);
   const [busy, setBusy] = useState<string | null>(null);
@@ -118,6 +145,13 @@ export default function WorkflowPage() {
             <h1 className="mt-2 font-display text-4xl font-bold tracking-tight">{w.name}</h1>
             <p className="mt-2 text-mist">{w.intent}</p>
           </div>
+
+          {w.status !== "dismissed" && (
+            <Variation w={w} onAnswer={(nw, accepted) => {
+              setW(nw); refresh();
+              toast(accepted ? "Updated to match how you work now" : "Kept as it was. I won't ask about this again", "good");
+            }} />
+          )}
 
           {w.status === "suggested" && (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={softSpring} className="rounded-3xl border border-hand/35 bg-hand/[0.07] p-5">
@@ -213,12 +247,38 @@ export default function WorkflowPage() {
         <section className="panel h-fit min-w-0 rounded-3xl p-5 lg:sticky lg:top-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-display text-lg font-semibold">{proposal?.understood ? "The workflow, with your change" : "The workflow"}</h2>
-            {!editing && <Button size="sm" variant="quiet" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => setEditing(true)}>Edit</Button>}
+            {!editing && !shaping && w.status !== "dismissed" && (
+              <div className="flex gap-1">
+                <Button size="sm" variant="quiet" icon={<ListPlus className="h-3.5 w-3.5" />} onClick={() => { setProposal(null); setShaping(true); }}>Add or remove steps</Button>
+                <Button size="sm" variant="quiet" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => setEditing(true)}>Edit wording</Button>
+              </div>
+            )}
+            {shaping && <Button size="sm" variant="primary" icon={<CheckCircle2 className="h-3.5 w-3.5" />} onClick={() => setShaping(false)}>Done</Button>}
           </div>
           {editing ? (
             <Editor spec={w.spec} onCancel={() => setEditing(false)} onSave={async (s) => {
               setW(await api.patchWorkflow(id, { spec: s })); setEditing(false); toast("Saved. I'll use your wording from now on", "good");
             }} />
+          ) : shaping ? (
+            <>
+              <p className="mb-3 rounded-xl border border-dashed border-white/15 px-3 py-2 text-[13px] text-mist">
+                Use <b className="text-paper">+</b> to add a step at that point, or the bin to remove one. Each change is saved as you make it.
+              </p>
+              <Pipeline spec={w.spec} changed={justChanged} edit={{
+                onDelete: async (stepId) => {
+                  try { const r = await api.editSteps(id, { op: "delete", step_id: stepId }); setW(r.workflow); refresh(); toast(r.message, "good"); return true; }
+                  catch (e) { toast((e as Error).message, "bad"); return false; }
+                },
+                onAdd: async (after, kind, params) => {
+                  try {
+                    const r = await api.editSteps(id, { op: "add", after, kind, params });
+                    setJustChanged(changedIds(w.spec, r.workflow.spec)); setW(r.workflow); refresh(); toast(r.message, "good");
+                    setTimeout(() => setJustChanged(undefined), 15000);
+                    return true;
+                  } catch (e) { toast((e as Error).message, "bad"); return false; }
+                },
+              }} />
+            </>
           ) : (
             <>
               {w.status !== "dismissed" && <AskChange w={w} proposal={proposal} setProposal={setProposal} onApplied={(nw, p) => {
