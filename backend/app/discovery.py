@@ -126,9 +126,9 @@ def tokenize(sess: list[dict], st: dict | None = None):
     st = st if st is not None else db.settings()
     ign = ignore_list(st)
     try:
-        min_dwell = float(st.get("min_dwell_sec", 20))
+        min_dwell = float(st.get("min_dwell_sec", 10))
     except (TypeError, ValueError):
-        min_dwell = 20.0
+        min_dwell = 10.0
     toks, groups = [], []
     for i, e in enumerate(sess):
         t = token(e)

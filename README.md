@@ -73,7 +73,7 @@ Activity is split into tasks wherever you pause for a few minutes. WorkFlowOS th
 
 - Different ways of doing the same thing count as the same step: searching for a customer and clicking them in the list are both "find the customer".
 - A routine must actually **do** something (save, send, download, submit). Just looking around is never suggested.
-- **Quick glances are ignored.** Switching to another app or tab only counts if you stay there about 20 seconds or actually do something there. Apps on your "never part of work" list (WhatsApp, YouTube and similar, editable in Settings) are skipped however long you stay.
+- **Quick glances are ignored.** Switching to another app or tab only counts if you stay there about 10 seconds or actually do something there. Apps on your "never part of work" list (WhatsApp, YouTube and similar, editable in Settings) are skipped however long you stay.
 - **The same routine is never suggested twice.** Variations and pieces of one routine are counted together as one suggestion, and a routine you dismissed doesn't come back as a "new" variant.
 
 ### 3 · Generate and approve

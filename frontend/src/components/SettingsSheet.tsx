@@ -12,13 +12,13 @@ export default function SettingsSheet({ open, onClose }: { open: boolean; onClos
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [ignore, setIgnore] = useState("");
-  const [dwell, setDwell] = useState("20");
+  const [dwell, setDwell] = useState("10");
   useEffect(() => {
-    if (open && state) { setIgnore(state.settings.ignore_apps ?? ""); setDwell(state.settings.min_dwell_sec ?? "20"); }
+    if (open && state) { setIgnore(state.settings.ignore_apps ?? ""); setDwell(state.settings.min_dwell_sec ?? "10"); }
   }, [open]);  // load once per opening, so typing isn't overwritten by live updates
   if (!state) return null;
   const s = state.settings;
-  const noiseChanged = ignore.trim() !== (s.ignore_apps ?? "").trim() || dwell !== (s.min_dwell_sec ?? "20");
+  const noiseChanged = ignore.trim() !== (s.ignore_apps ?? "").trim() || dwell !== (s.min_dwell_sec ?? "10");
   const save = async (p: Record<string, unknown>) => { await api.settings(p); await refresh(); };
   return (
     <Sheet open={open} onClose={onClose} title="Settings">

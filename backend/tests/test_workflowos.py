@@ -388,6 +388,11 @@ def test_staying_in_an_app_or_acting_on_a_page_still_counts_as_work():
         {"ts": "2026-01-01T10:00:50", "app": "desktop", "action": "app_focus", "data": json.dumps({"process": "Notepad.exe"})},
         {"ts": "2026-01-01T10:00:53", "app": "mail", "action": "open_email", "data": "{}"}])
     assert toks == ["web.portal.test", "web.portal.test.click:export", "desktop.excel", "mail.open_email"]
+    assert db.settings()["min_dwell_sec"] == "10"  # the default: under 10 s with nothing done is a glance
+    stay = lambda secs: discovery.tokenize([  # noqa: E731
+        {"ts": "2026-01-01T10:00:00", "app": "desktop", "action": "app_focus", "data": json.dumps({"process": "EXCEL.EXE"})},
+        {"ts": f"2026-01-01T10:00:{secs:02d}", "app": "mail", "action": "open_email", "data": "{}"}])[0]
+    assert stay(9) == ["mail.open_email"] and stay(10) == ["desktop.excel", "mail.open_email"]
 
 
 def test_never_work_apps_are_ignored_however_long_you_stay():
