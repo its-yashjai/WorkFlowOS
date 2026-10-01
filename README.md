@@ -12,7 +12,7 @@
   <img alt="Ollama" src="https://img.shields.io/badge/Ollama-on--device%20AI-000000?logo=ollama&logoColor=white" />
   <img alt="Gmail" src="https://img.shields.io/badge/Gmail-connected-EA4335?logo=gmail&logoColor=white" />
   <img alt="Slack" src="https://img.shields.io/badge/Slack-connected-4A154B?logo=slack&logoColor=white" />
-  <img alt="Tests" src="https://img.shields.io/badge/Tests-27%20passing-5BE49B" />
+  <img alt="Tests" src="https://img.shields.io/badge/Tests-33%20passing-5BE49B" />
 </p>
 
 <p align="center"><i>Built for the TechStackX Hackathon · CMRIT × 7thGear</i></p>
@@ -287,7 +287,7 @@ Everything works without the extras. The built-in Mailbox, Ledger CRM and Huddle
 | AI | Ollama with qwen2.5:3b, on-device · optional Groq cloud fallback, off by default |
 | Real apps | Gmail over IMAP (App Password, read-only) · Slack Incoming Webhooks |
 | Observers | Python desktop agent (no extra installs) · Chrome extension (Manifest V3) |
-| Quality | 27 automated backend tests · full browser end-to-end runs of every demo path |
+| Quality | 33 automated backend tests · full browser end-to-end runs of every demo path |
 
 ### What's inside
 

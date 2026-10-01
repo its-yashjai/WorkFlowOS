@@ -167,6 +167,18 @@ async def put_settings(s: SettingsIn):
 
 
 # ---------------- observation ----------------
+def local_ts(s: str | None) -> str:
+    """Every event time is stored the same way: local time, no timezone. A sender may give UTC ("...Z"),
+    an offset, or nonsense; mixing those with plain local times would break the time maths in discovery."""
+    try:
+        t = datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return db.now()
+    if t.tzinfo:
+        t = t.astimezone().replace(tzinfo=None)
+    return t.isoformat(timespec="seconds")
+
+
 class EventIn(BaseModel):
     app: str
     action: str
@@ -184,7 +196,7 @@ async def post_events(body: EventIn | list[EventIn]):
     n = 0
     for e in evs:
         db.ex("INSERT INTO events(ts, source, app, action, target, data) VALUES (?,?,?,?,?,?)",
-              (e.ts or db.now(), e.source, e.app, e.action, e.target[:200], json.dumps(e.data)[:4000]))
+              (local_ts(e.ts), e.source, e.app, e.action, e.target[:200], json.dumps(e.data)[:4000]))
         n += 1
     await _after_user_action()  # stream it and re-run discovery once activity settles
     return {"stored": n, "observing": True}
@@ -423,7 +435,7 @@ async def ai_status():
 @app.post("/api/runs/{rid}/undo")
 async def undo_run(rid: int):
     if not await engine.undo(rid):
-        raise HTTPException(400, "Only a finished run can be undone")
+        raise HTTPException(400, "This run has nothing to undo")
     await hub.send({"type": "apps", "app": "all"})
     await hub.send({"type": "workflows"})
     return {"ok": True}
@@ -732,14 +744,27 @@ import mimetypes  # noqa: E402
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("image/svg+xml", ".svg")
-DIST = os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
+DIST = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
+
+
+def inside_dist(path: str) -> str | None:
+    """The real file for a requested path, but only if it is inside the built web app folder.
+    A path like ../../backend/workflowos.db (also when URL-encoded as %2e%2e) must never be served."""
+    f = os.path.realpath(os.path.join(DIST, path))
+    try:
+        ok = os.path.commonpath([DIST, f]) == DIST
+    except ValueError:  # e.g. a different drive on Windows
+        ok = False
+    return f if ok and f != DIST and os.path.isfile(f) else None
+
+
 if os.path.isdir(DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(DIST, "assets")), name="assets")
 
     @app.get("/{path:path}")
     def spa(path: str):
-        f = os.path.join(DIST, path)
-        if path and os.path.isfile(f):
+        f = inside_dist(path)
+        if f:
             return FileResponse(f)
         # never cache the page itself, so an updated app is picked up on the next refresh
         return FileResponse(os.path.join(DIST, "index.html"), headers={"Cache-Control": "no-cache"})

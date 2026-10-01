@@ -164,6 +164,12 @@ export default function RunPage() {
             {run.status === "failed" && (
               <motion.div key="f" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-3xl border border-bad/35 bg-bad/[0.07] p-5 text-sm">
                 Every automation method failed for one step. Nothing was half-done silently. Check the step on the right, then run it again.
+                {run.steps.some((s) => s.undo) && (
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <span className="text-mist">The steps before it did make changes. You can roll those back.</span>
+                    <UndoButton id={run.id} onDone={load} />
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -204,7 +210,7 @@ function UndoButton({ id, onDone }: { id: number; onDone: () => void }) {
   return (
     <Button size="sm" variant="danger" busy={busy} icon={<Undo2 className="h-4 w-4" />} onClick={async () => {
       setBusy(true);
-      try { await api.undo(id); toast("Rolled back the CRM note and the Huddle message", "good"); onDone(); }
+      try { await api.undo(id); toast("Rolled back everything this run changed", "good"); onDone(); }
       catch (e) { toast((e as Error).message, "bad"); } finally { setBusy(false); }
     }}>Undo this run</Button>
   );

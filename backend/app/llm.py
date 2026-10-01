@@ -38,7 +38,8 @@ def ollama_model() -> str | None:
     _ollama["checked"] = time.time()
     try:
         tags = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=0.8).json().get("models", [])
-        names = [t["name"] for t in tags]
+        # embedding models are listed too, but they can't chat
+        names = [t["name"] for t in tags if not re.search(r"embed|bge|minilm|\be5\b", t["name"], re.I)]
         want = _settings().get("ollama_model", "").strip()
         pick = want if want in names else next((p for p in PREFERRED if p in names), names[0] if names else None)
         _ollama["model"] = pick

@@ -1,4 +1,3 @@
-import os
 """Demo apps (Mailbox, Ledger CRM, Huddle) as a service layer.
 
 Actions done by a person are recorded as structured events (like an accessibility /
@@ -6,6 +5,7 @@ semantic UI observer would). Actions done by the automation engine are not, so
 WorkFlowOS never "learns" from its own runs.
 """
 import json
+import os
 
 from . import db
 

@@ -509,3 +509,104 @@ def test_only_this_computer_and_the_extension_may_call_the_server():
     assert ok("http://192.168.1.7:5173", host="192.168.1.7:5173")   # the page that served the app
     assert not ok("https://evil.example") and not ok("https://evil.example", host="localhost:8765")
     assert not ok("http://localhost.evil.example")
+
+
+# ---------------- bugs found in review: each one reproduced first, then fixed ----------------
+def test_the_page_route_never_serves_files_outside_the_web_app():
+    """Path traversal: /%2e%2e/%2e%2e/backend/workflowos.db used to download the database with the saved passwords."""
+    from app import main
+    from starlette.testclient import TestClient
+    assert main.inside_dist("index.html")
+    for bad in ("../../backend/requirements.txt", "../../backend/app/main.py", "..", "assets/../../../README.md",
+                os.path.abspath(os.environ["WFOS_DB"])):
+        assert main.inside_dist(bad) is None, bad
+    c = TestClient(main.app)  # the real route, with the encoded form a browser or script would send
+    for url in ("/%2e%2e/%2e%2e/backend/requirements.txt", "/..%2f..%2fbackend%2frequirements.txt", "/%2e%2e/%2e%2e/README.md"):
+        r = c.get(url)
+        assert "fastapi" not in r.text and "TechStackX" not in r.text, url
+        assert r.status_code == 200 and "<div id=\"root\">" in r.text  # it just gets the app page
+
+
+def test_self_healing_never_picks_a_destructive_button_and_never_guesses_on_a_tie():
+    from app import heal
+    save = heal.TARGETS["crm.save"]
+    btn = lambda text: {"text": text, "aria": "", "placeholder": "", "name": "", "id": "", "label": ""}  # noqa: E731
+    page = [btn("Log out"), btn("Delete record"), btn("Remove record"), btn("Update record"), btn("Cancel")]
+    assert heal.choose(save, page)["text"] == "Update record"
+    for t in ("Log out", "Sign out", "Delete record", "Remove record"):
+        assert heal.risky(btn(t), save["words"]), t
+        assert heal.score(save["words"], btn(t)) < 0.5, t   # "log" and "record" no longer mean "save"
+    with pytest.raises(engine.StepError, match="nothing on the page means the same"):
+        heal.choose(save, [btn("Log out"), btn("Delete record")])       # the save button is really gone: stop, don't click
+    with pytest.raises(engine.StepError, match="won't guess"):
+        heal.choose(save, [btn("Submit"), btn("Apply")])                # two different buttons fit equally well
+
+
+def test_gmail_never_skips_emails_when_many_arrive_between_checks(monkeypatch):
+    from app import connectors
+    import imaplib
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", FakeIMAP)
+    db.set_setting("gmail_user", "yash@example.com"); db.set_setting("gmail_app_password", "abcd efgh ijkl mnop")
+    FakeIMAP.MAIL = {1: _mime("old"), 2: _mime("old"), 3: _mime("old")}
+    assert connectors.gmail_connect()["ok"]
+    FakeIMAP.MAIL.update({u: _mime(f"Invoice {u}") for u in range(4, 19)})  # 15 arrive while the laptop was asleep
+    first = connectors.gmail_poll()
+    assert len(first) == 10 and db.settings()["gmail_last_uid"] == "13"     # the oldest ten, and it remembers where it stopped
+    second = connectors.gmail_poll()
+    assert len(second) == 5 and db.settings()["gmail_last_uid"] == "18"
+    subjects = {db.one("SELECT subject FROM emails WHERE id=?", (i,))["subject"] for i in first + second}
+    assert subjects == {f"Invoice {u}" for u in range(4, 19)}                # every one of the 15 came in
+    assert connectors.gmail_poll() == []
+
+
+def test_an_event_with_a_timezone_or_a_bad_time_cannot_break_discovery():
+    from app import main
+    assert main.local_ts("2026-09-30T10:15:02") == "2026-09-30T10:15:02"
+    assert "Z" not in main.local_ts("2026-09-30T10:15:02Z") and "+" not in main.local_ts("2026-09-30T10:15:02+05:30")
+    assert main.local_ts("yesterday-ish")[:4].isdigit() and main.local_ts(None)[:4].isdigit()
+
+    async def go():
+        return await main.post_events(main.EventIn(app="web", action="navigate", data={"domain": "a.test"}, ts="2026-09-30T10:15:02Z"))
+    assert run(go())["stored"] == 1
+    assert db.one("SELECT ts FROM events ORDER BY id DESC LIMIT 1")["ts"].count(":") == 2
+    # rows saved by an older version may still be bad: discovery reads them instead of crashing for good
+    for bad in ("2026-09-30T10:15:02Z", "2026-09-30T04:45:02+00:00", "not a time"):
+        db.ex("INSERT INTO events(ts,source,app,action,target,data) VALUES (?,?,?,?,?,?)", (bad, "x", "web", "navigate", "", "{}"))
+    discovery.refresh()
+    assert db.one("SELECT name FROM workflows")["name"] == "Process customer request"
+
+
+def test_a_run_that_fails_halfway_can_still_be_undone(monkeypatch):
+    w = active_workflow()
+    real_app = engine.TIERS["app"]
+
+    async def app_but_chat_is_down(action, p, v):
+        if action == "send_message":
+            raise engine.StepError("chat is down")
+        return await real_app(action, p, v)
+
+    async def no_browser(action, p, v):
+        raise engine.StepError("no browser here")
+    monkeypatch.setitem(engine.TIERS, "app", app_but_chat_is_down)
+    monkeypatch.setitem(engine.TIERS, "browser", no_browser)
+    notes_before = len(apps.find_by_email("kabir@finlyte.com")["notes"])
+    rid = start_for(w, 0)
+    run(engine.execute(rid))
+    assert engine._load(rid)["status"] == "failed"
+    assert len(apps.find_by_email("kabir@finlyte.com")["notes"]) == notes_before + 1   # the CRM note was already written
+    assert run(engine.undo(rid)) is True
+    assert engine._load(rid)["status"] == "undone"
+    assert len(apps.find_by_email("kabir@finlyte.com")["notes"]) == notes_before       # and now it's gone again
+    assert run(engine.undo(rid)) is False                                              # nothing left to undo
+
+
+def test_the_local_ai_picker_skips_models_that_cannot_chat(monkeypatch):
+    import httpx
+
+    class R:
+        def json(self):
+            return {"models": [{"name": "nomic-embed-text:latest"}, {"name": "bge-m3:latest"}, {"name": "mistral:7b"}]}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: R())
+    monkeypatch.setitem(llm._ollama, "checked", 0)
+    assert llm.ollama_model() == "mistral:7b"
+    monkeypatch.setitem(llm._ollama, "checked", 1e18); monkeypatch.setitem(llm._ollama, "model", None)

@@ -123,14 +123,13 @@ def gmail_poll() -> list[int]:
     try:
         typ, data = m.uid("search", None, f"UID {last + 1}:*")
         uids = sorted(u for u in (int(x) for x in (data[0] or b"").split()) if u > last)
-        for uid in uids[-10:]:
+        for uid in uids[:10]:  # oldest first; anything beyond 10 comes in on the next check, never skipped
             typ, parts = m.uid("fetch", str(uid), "(BODY.PEEK[])")
             raw = next((p[1] for p in parts if isinstance(p, tuple)), None)
             parsed = parse_message(raw) if raw else None
             if parsed:
                 new.append(store(parsed, uid))
-        if uids:
-            db.set_setting("gmail_last_uid", str(max(uids)))
+            db.set_setting("gmail_last_uid", str(uid))  # only move past an email once it has been handled
     finally:
         try:
             m.logout()

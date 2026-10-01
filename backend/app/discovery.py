@@ -25,7 +25,13 @@ NOISE = {"mail.view_inbox", "crm.view_list", "chat.view", "files.file_saved",
 
 
 def ts(s):
-    return datetime.fromisoformat(s)
+    """Parse a stored time. Old rows may carry a timezone or be malformed: read them as local time
+    instead of letting one bad row stop discovery for good."""
+    try:
+        t = datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return datetime.min
+    return t.astimezone().replace(tzinfo=None) if t.tzinfo else t
 
 
 def token(e: dict) -> str | None:

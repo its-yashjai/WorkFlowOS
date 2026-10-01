@@ -415,9 +415,10 @@ def _earn_trust(wid, v):
 
 
 async def undo(run_id: int):
-    """Roll back everything a run changed, newest first. Undo also costs the workflow its autopilot."""
+    """Roll back everything a run changed, newest first. Undo also costs the workflow its autopilot.
+    A run that failed halfway can be undone too, so a change made before the failing step isn't left behind."""
     run = _load(run_id)
-    if run["status"] != "done":
+    if run["status"] not in ("done", "failed") or not any(rs.get("undo") for rs in run["steps"]):
         return False
     for rs in reversed(run["steps"]):
         u = rs.get("undo")

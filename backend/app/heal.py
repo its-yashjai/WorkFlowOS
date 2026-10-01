@@ -11,7 +11,7 @@ import re
 
 # words that mean the same thing on a UI (small, auditable semantic lexicon)
 CONCEPTS = [
-    {"save", "update", "submit", "confirm", "apply", "store", "done", "log", "record"},
+    {"save", "update", "submit", "confirm", "apply", "store", "done"},  # not "log"/"record": "Log out", "Delete record"
     {"note", "notes", "request", "comment", "details", "describe", "description", "summary", "ask", "asked"},
     {"attachment", "attach", "file", "document", "doc", "linked", "upload"},
     {"message", "msg", "write", "chat", "type", "reply", "say", "post", "compose"},
@@ -20,6 +20,18 @@ CONCEPTS = [
 ]
 STOP = {"the", "a", "an", "to", "of", "and", "or", "your", "this", "what", "did", "optional", "here", "for", "with",
         "name", "customer", "customers", "team"}
+
+# buttons that destroy or leave: never chosen by healing unless the step itself asks for that
+DANGER = {"delete", "remove", "discard", "cancel", "reset", "clear", "archive", "logout", "signout", "unsubscribe",
+          "deactivate", "close", "erase", "revoke"}
+
+
+def risky(cand: dict, intent_words) -> bool:
+    text = " ".join([cand.get("text", ""), cand.get("aria", ""), cand.get("label", "")]).lower()
+    words = set(re.findall(r"[a-z]+", text))
+    hit = (words & DANGER) or re.search(r"\b(log|sign)\s*out\b", text)
+    return bool(hit) and not (words & set(intent_words))
+
 
 # the context a step's healing runs in: learned locators + what got healed during this step
 CTX: contextvars.ContextVar[dict] = contextvars.ContextVar("heal_ctx", default={"ui": {}, "healed": []})
@@ -71,6 +83,20 @@ def score(intent_words, cand: dict) -> float:
     return len(want & have) / max(1, len(want))
 
 
+def choose(t: dict, cands: list[dict]) -> dict:
+    """Pick the element that means the same as target `t`, or refuse. Guessing wrong here means clicking
+    the wrong button on a real page, so: nothing destructive, nothing below 0.5, and no coin-flip on a tie."""
+    from .engine import StepError
+    safe = [c for c in cands if not risky(c, t["words"])]
+    ranked = sorted(safe, key=lambda c: -score(t["words"], c))
+    if not ranked or score(t["words"], ranked[0]) < 0.5:
+        raise StepError(f"{t['label']} is gone and nothing on the page means the same thing")
+    if len(ranked) > 1 and score(t["words"], ranked[1]) == score(t["words"], ranked[0]) \
+            and describe(ranked[1]) != describe(ranked[0]):
+        raise StepError(f"{describe(ranked[0])} and {describe(ranked[1])} both look like {t['label']}, so I won't guess")
+    return ranked[0]
+
+
 def describe(c: dict) -> str:
     if c.get("text"):
         return f'"{c["text"]}"'
@@ -100,11 +126,7 @@ async def locate(pg, key: str):
     if await loc.count():
         return loc.first
     cands = [c for c in await pg.evaluate(_COLLECT, t["role"]) if c["visible"]]
-    ranked = sorted(cands, key=lambda c: -score(t["words"], c))
-    if not ranked or score(t["words"], ranked[0]) < 0.5:
-        from .engine import StepError
-        raise StepError(f"{t['label']} is gone and nothing on the page means the same thing")
-    best = ranked[0]
+    best = choose(t, cands)
     if t["role"] == "button" and best["text"]:
         how = {"by": "role", "role": "button", "name": best["text"]}
     elif best["placeholder"]:
