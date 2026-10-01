@@ -2,7 +2,7 @@
 
 <h3 align="center">It watches how you work, finds what you keep repeating, and does it for you.</h3>
 
-<p align="center"><b>AI-powered, OS-level workflow automation that earns your trust, heals itself when apps change, and can undo anything it did.</b></p>
+<p align="center"><b>AI-powered, OS-level workflow automation that earns your trust, heals itself when apps change, asks before it changes anything, and can undo anything it did.</b></p>
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" />
@@ -38,7 +38,11 @@ Tools like Zapier or RPA make you design the automation yourself, and the record
 | 🔍 **Finds routines by itself** | Watches your apps, browser and files, and spots the sequences you repeat. You never design anything. |
 | 🧠 **Understands the intent** | Turns clicks into a named workflow ("Process customer request") with a trigger, steps, variables and conditions. |
 | 🛡️ **Earns your trust** | New automations show you every change first. After clean runs it offers autopilot. |
-| 🩹 **Heals itself** | When an app is redesigned ("Save" becomes "Update record"), it finds the new button by meaning and keeps going. |
+| 🧹 **Ignores your tab-hopping** | A quick look at another app or tab never becomes a step. Only what you stay on, or act on, counts as work. |
+| 1️⃣ **One routine, one suggestion** | Variations and pieces of the same routine are counted together. A routine you dismissed doesn't come back. |
+| 🙋 **Asks before it changes a workflow** | When you start doing a routine differently, it shows what changed and waits for **Update** or **Keep mine**. |
+| ✏️ **Edit the steps yourself** | Add a step in between or remove one. Edits are checked, so the workflow always stays runnable. |
+| 🩹 **Heals itself, safely** | When an app is redesigned ("Save" becomes "Update record"), it finds the new button by meaning and keeps going. It never picks a destructive button and never guesses on a tie. |
 | ↩️ **Undo anything** | Every run records how to reverse itself. One click rolls it all back. |
 | 🗣️ **Change it by saying it** | "Only notify #finance for invoices and tag Priya" becomes a validated diff you approve. |
 | 🔒 **Private by default** | The AI runs on your laptop through Ollama. Your activity never leaves the machine. |
@@ -73,8 +77,10 @@ Activity is split into tasks wherever you pause for a few minutes. WorkFlowOS th
 
 - Different ways of doing the same thing count as the same step: searching for a customer and clicking them in the list are both "find the customer".
 - A routine must actually **do** something (save, send, download, submit). Just looking around is never suggested.
-- **Quick glances are ignored.** Switching to another app or tab only counts if you stay there about 10 seconds or actually do something there. Apps on your "never part of work" list (WhatsApp, YouTube and similar, editable in Settings) are skipped however long you stay.
+- **Quick glances are ignored.** Switching to another app or tab only counts if you stay there about 10 seconds or actually do something there (click, submit, download). Apps on your "never part of work" list (WhatsApp, YouTube and similar) are skipped however long you stay. Both are editable in Settings.
 - **The same routine is never suggested twice.** Variations and pieces of one routine are counted together as one suggestion, and a routine you dismissed doesn't come back as a "new" variant.
+
+<img src="docs/screenshots/12-what-doesnt-count.jpg" alt="Settings: apps that are never part of a workflow, and how short a switch is ignored" width="620" />
 
 ### 3 · Generate and approve
 
@@ -82,9 +88,17 @@ The routine becomes a readable workflow. It shows *why* it's suggested: how many
 
 <img src="docs/screenshots/03-workflow-approval.jpg" alt="The generated workflow waiting for approval" width="900" />
 
-**It asks before changing a workflow.** If you start doing a routine differently, WorkFlowOS doesn't touch the workflow. It shows what changed (for example "− Notify the team") and you choose **Update the workflow** or **Keep mine**. Updating keeps your own wording, conditions and added steps.
+### 4 · It asks before changing a workflow
 
-**Add or remove steps yourself.** On the workflow page, use **+** to insert a step in between (notify a channel, add a CRM note, open a page, click a button, or a step you do yourself) and the bin to remove one. Every edit is checked, so you can't remove a step that a later step still needs.
+If you start doing a routine differently, WorkFlowOS doesn't touch the workflow. It shows what changed (for example "− Notify the team") and you choose **Update the workflow** or **Keep mine**. Updating keeps your own wording, conditions and added steps. If you keep yours, it won't ask about that variation again.
+
+<img src="docs/screenshots/10-asks-before-changing.jpg" alt="A notice that the routine is now done differently, with Update the workflow and Keep mine" width="900" />
+
+### 5 · Add or remove steps yourself
+
+On the workflow page, use **+** to insert a step in between (notify a channel, add a CRM note, open a page, click a button, or a step you do yourself) and the bin to remove one. Every edit is checked: you can't remove a step that a later step still needs, and you can't add a step that uses something not known yet at that point.
+
+<img src="docs/screenshots/11-add-remove-steps.jpg" alt="The workflow in edit mode with a plus between steps and a bin on each step" width="900" />
 
 ---
 
@@ -101,10 +115,12 @@ flowchart TD
     APP -- down --> BR{"Browser automation<br/>(Playwright)"}
     BR -- button found --> OK
     BR -- screen changed --> HEAL["🩹 Self-healing<br/>find the element by meaning"]
-    HEAL -- found --> V["Verify it really saved,<br/>remember the new layout"]
+    HEAL -- one safe match --> V["Verify it really saved,<br/>remember the new layout"]
     V --> OK
-    HEAL -- nothing similar --> ASK(["🙋 Stop and ask you"])
+    HEAL -- nothing similar,<br/>or two buttons fit equally --> STOP(["🛑 Stop the run and show<br/>every attempt. Never guess."])
 ```
+
+Self-healing is deliberately careful. Buttons that delete, remove, cancel or log out are never candidates, and if two different buttons fit equally well it stops instead of clicking one.
 
 ### 🩹 Self-healing in action
 
@@ -153,7 +169,7 @@ An unknown sender isn't guessed. It stops, suggests the likely company by email 
 </tr>
 </table>
 
-**Undo:** every change a run makes is recorded with its reverse. One click removes the CRM note and the chat message (and posts a correction in Slack), then sends the workflow back to preview mode.
+**Undo:** every change a run makes is recorded with its reverse. One click removes the CRM note and the chat message (and posts a correction in Slack), then sends the workflow back to preview mode. A run that failed halfway can be undone too, so nothing is left half-done.
 
 ---
 
@@ -262,6 +278,7 @@ Everything works without the extras. The built-in Mailbox, Ledger CRM and Huddle
 7. **Break everything:** Settings → API down, integration down, CRM redesign. The run still completes and says *"The app changed. I adapted."*
 8. **Undo:** one click rolls the run back.
 9. **Say it:** *"Only notify #finance if the attachment is an invoice, and tag Priya."* Apply, send the invoice, and see it in #finance.
+10. **Edit it:** on the workflow page click **Add or remove steps**, add a step with **+**, and try removing "Find the customer": it explains why it can't.
 
 ---
 
@@ -274,6 +291,7 @@ Everything works without the extras. The built-in Mailbox, Ledger CRM and Huddle
 - ⏸️ Observing can be paused at any time from Settings
 - 🧾 The automation's own actions are never mistaken for yours
 - 🚪 The server only answers this computer: the web app, the desktop agent and the browser extension. A website open in your browser can't call it
+- 📁 The web server only serves the app's own files. It can't be tricked into handing out other files on the computer
 
 ---
 
@@ -288,6 +306,20 @@ Everything works without the extras. The built-in Mailbox, Ledger CRM and Huddle
 | Real apps | Gmail over IMAP (App Password, read-only) · Slack Incoming Webhooks |
 | Observers | Python desktop agent (no extra installs) · Chrome extension (Manifest V3) |
 | Quality | 33 automated backend tests · full browser end-to-end runs of every demo path |
+
+### Found and fixed
+
+Bugs found by using and reviewing the project, each reproduced first and now covered by a test:
+
+| Bug | Fix |
+| :--- | :--- |
+| A crafted URL (`/%2e%2e/…`) could download files outside the web app folder, including the local database with saved keys | The page route resolves the real path and only serves files inside the built app |
+| Self-healing scored "Log out" and "Delete record" the same as "Update record" | Destructive buttons are excluded, and a tie stops the step |
+| A quick look at another tab became a workflow step | Dwell-time filter and a never-work list |
+| One routine appeared as several suggestions | Variations and pieces are merged into one |
+| Gmail skipped emails when more than 10 arrived between checks | Oldest first, and the marker only moves past handled emails |
+| One event with a timezone crashed discovery on every run | Times are normalised to local time on the way in |
+| Any website could call the local server | Origin check on HTTP and WebSocket |
 
 ### What's inside
 
